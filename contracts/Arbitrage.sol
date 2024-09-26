@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity 0.8.19;
-
+pragma solidity 0.8.27;
 
 import "@balancer-labs/v2-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v2-interfaces/contracts/vault/IFlashLoanRecipient.sol";
@@ -8,41 +7,33 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 
 contract Arbitrage is IFlashLoanRecipient {
     IVault private constant vault =
-        IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);
+        IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8); // Balancer Vault for flash loans
 
-    IUniswapV2Router02 public immutable sRouter; // Sushiswap
-    IUniswapV2Router02 public immutable qRouter; // Quickswap
-    IUniswapV2Router02 public immutable aRouter; // Apeswap
-    IUniswapV2Router02 public immutable uRouter; // Uniswap
+    IUniswapV2Router02 public immutable sRouter; // Sushiswap Router
+    IUniswapV2Router02 public immutable pRouter; // Pancakeswap Router
 
     address public owner;
+    address private constant WBTC = 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599; // Wrapped Bitcoin (WBTC) address on Ethereum
+    address private constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2; // Wrapped Ether (WETH) address on Ethereum
 
     constructor(
-        address _sRouter, // Sushiswap
-        address _qRouter, // Quickswap
-        address _aRouter, // Apeswap
-        address _uRouter  // Uniswap
+        address _sRouter, // Sushiswap Router
+        address _pRouter // Pancakeswap Router
     ) {
         sRouter = IUniswapV2Router02(_sRouter);
-        qRouter = IUniswapV2Router02(_qRouter);
-        aRouter = IUniswapV2Router02(_aRouter);
-        uRouter = IUniswapV2Router02(_uRouter);
+        pRouter = IUniswapV2Router02(_pRouter);
         owner = msg.sender;
     }
 
-    function executeTrade(
-        address _token0,
-        address _token1,
-        uint256 _flashAmount
-    ) external {
-        bytes memory data = abi.encode(_token0, _token1);
+    function executeTrade(uint256 _flashAmount) external {
+        bytes memory data = abi.encode(WBTC, WETH);
 
-        // Token to flash loan, by default we are flash loaning 1 token.
-        IERC20[] memory tokens = new IERC20[](1);
-        tokens[0] = IERC20(_token0);
+        // Token to flash loan
+        IERC20;
+        tokens[0] = IERC20(WBTC);
 
-        // Flash loan amount.
-        uint256[] memory amounts = new uint256[](1);
+        // Flash loan amount
+        uint256;
         amounts[0] = _flashAmount;
 
         vault.flashLoan(this, tokens, amounts, data);
@@ -58,69 +49,55 @@ contract Arbitrage is IFlashLoanRecipient {
 
         uint256 flashAmount = amounts[0];
 
-        // Decoding userData to get token addresses
+        // Decode userData to get token addresses
         (address token0, address token1) = abi.decode(
             userData,
             (address, address)
         );
 
-        // Use the money here!
-        address[] memory path = new address[](2);
+        // Step 1: Swap WBTC for WETH on PancakeSwap
+        address;
+        path[0] = WBTC;
+        path[1] = WETH;
+        _swapOnPancakeSwap(path, flashAmount, 0);
 
-        // Step 1: Swap on Uniswap (buy token1 with token0)
-        path[0] = token0;
-        path[1] = token1;
-        _swapOnUniswap(path, flashAmount, 0);
-
-        // Step 2: Swap on Quickswap (swap token1 for token0)
-        uint256 amountToken1 = IERC20(token1).balanceOf(address(this));
-        path[0] = token1;
-        path[1] = token0;
-        _swapOnQuickswap(path, amountToken1, 0);
-
-        // Step 3: Swap on Apeswap (swap token0 for token1)
-        uint256 amountToken0 = IERC20(token0).balanceOf(address(this));
-        path[0] = token0;
-        path[1] = token1;
-        _swapOnApeswap(path, amountToken0, 0);
-
-        // Step 4: Swap on Sushiswap (swap token1 for token0)
-        amountToken1 = IERC20(token1).balanceOf(address(this));
-        path[0] = token1;
-        path[1] = token0;
-        _swapOnSushiswap(path, amountToken1, flashAmount);
+        // Step 2: Swap WETH for WBTC on Sushiswap
+        uint256 amountWETH = IERC20(WETH).balanceOf(address(this));
+        path[0] = WETH;
+        path[1] = WBTC;
+        _swapOnSushiSwap(path, amountWETH, flashAmount);
 
         // Repay the flash loan
-        IERC20(token0).transfer(address(vault), flashAmount);
+        IERC20(WBTC).transfer(address(vault), flashAmount);
 
-        // Transfer remaining token0 to the owner as profit
-        IERC20(token0).transfer(owner, IERC20(token0).balanceOf(address(this)));
+        // Transfer remaining WBTC to the owner as profit
+        IERC20(WBTC).transfer(owner, IERC20(WBTC).balanceOf(address(this)));
     }
 
-    // Internal function for swapping on Uniswap
-    function _swapOnUniswap(
+    // Internal function for swapping on PancakeSwap
+    function _swapOnPancakeSwap(
         address[] memory _path,
         uint256 _amountIn,
         uint256 _amountOut
     ) internal {
-        // Approve the token transfer to the Uniswap router
+        // Approve the token transfer to the PancakeSwap router
         require(
-            IERC20(_path[0]).approve(address(uRouter), _amountIn),
-            "Uniswap approval failed."
+            IERC20(_path[0]).approve(address(pRouter), _amountIn),
+            "PancakeSwap approval failed."
         );
 
-        // Perform the token swap on Uniswap
-        uRouter.swapExactTokensForTokens(
-            _amountIn,       // Amount of input tokens to send
-            _amountOut,      // Minimum amount of output tokens to receive
-            _path,           // Swap path (array of token addresses)
-            address(this),   // Recipient address
-            block.timestamp + 1200  // Deadline for the swap
+        // Perform the token swap on PancakeSwap
+        pRouter.swapExactTokensForTokens(
+            _amountIn, // Amount of input tokens to send
+            _amountOut, // Minimum amount of output tokens to receive
+            _path, // Swap path (array of token addresses)
+            address(this), // Recipient address
+            block.timestamp + 1200 // Deadline for the swap
         );
     }
 
     // Internal function for swapping on Sushiswap
-    function _swapOnSushiswap(
+    function _swapOnSushiSwap(
         address[] memory _path,
         uint256 _amountIn,
         uint256 _amountOut
@@ -133,55 +110,11 @@ contract Arbitrage is IFlashLoanRecipient {
 
         // Perform the token swap on Sushiswap
         sRouter.swapExactTokensForTokens(
-            _amountIn,       // Amount of input tokens to send
-            _amountOut,      // Minimum amount of output tokens to receive
-            _path,           // Swap path (array of token addresses)
-            address(this),   // Recipient address
-            block.timestamp + 1200  // Deadline for the swap
-        );
-    }
-
-    // Internal function for swapping on Quickswap
-    function _swapOnQuickswap(
-        address[] memory _path,
-        uint256 _amountIn,
-        uint256 _amountOut
-    ) internal {
-        // Approve the token transfer to the Quickswap router
-        require(
-            IERC20(_path[0]).approve(address(qRouter), _amountIn),
-            "Quickswap approval failed."
-        );
-
-        // Perform the token swap on Quickswap
-        qRouter.swapExactTokensForTokens(
-            _amountIn,       // Amount of input tokens to send
-            _amountOut,      // Minimum amount of output tokens to receive
-            _path,           // Swap path (array of token addresses)
-            address(this),   // Recipient address
-            block.timestamp + 1200  // Deadline for the swap
-        );
-    }
-
-    // Internal function for swapping on Apeswap
-    function _swapOnApeswap(
-        address[] memory _path,
-        uint256 _amountIn,
-        uint256 _amountOut
-    ) internal {
-        // Approve the token transfer to the Apeswap router
-        require(
-            IERC20(_path[0]).approve(address(aRouter), _amountIn),
-            "Apeswap approval failed."
-        );
-
-        // Perform the token swap on Apeswap
-        aRouter.swapExactTokensForTokens(
-            _amountIn,       // Amount of input tokens to send
-            _amountOut,      // Minimum amount of output tokens to receive
-            _path,           // Swap path (array of token addresses)
-            address(this),   // Recipient address
-            block.timestamp + 1200  // Deadline for the swap
+            _amountIn, // Amount of input tokens to send
+            _amountOut, // Minimum amount of output tokens to receive
+            _path, // Swap path (array of token addresses)
+            address(this), // Recipient address
+            block.timestamp + 1200 // Deadline for the swap
         );
     }
 }
