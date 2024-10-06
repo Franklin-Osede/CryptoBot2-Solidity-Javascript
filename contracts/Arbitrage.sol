@@ -226,9 +226,23 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
         return flashLoanAmount;
     }
 
-    // Example function to get token prices (you would implement this based on your data sources)
-    function getTokenPrice(address token) internal view returns (uint256) {
-        // Placeholder for price fetching logic
-        return 1e18; // Assume 1 token is worth 1 ETH for simplicity
-    }
+    function getTokenPrice(
+    address tokenIn,  // El token del que queremos obtener el precio (por ejemplo, token0)
+    address tokenOut, // El token con el cual estamos comparando (por ejemplo, token1)
+    uint256 amountIn, // La cantidad de tokenIn para calcular el precio
+    uint256 slippageTolerance // La tolerancia de slippage en el intercambio
+) internal view returns (uint256) {
+    // Inicializar el array 'path' para obtener el precio a través de Uniswap
+    address;  // Declarar el array path con dos posiciones
+    path[0] = tokenIn;  // Primera dirección: tokenIn
+    path[1] = tokenOut; // Segunda dirección: tokenOut
+
+    // Obtener las cantidades de salida para el monto de entrada a través de Uniswap
+    uint256[] memory amountsOut = uRouter.getAmountsOut(amountIn, path);
+
+    // Aplicar la tolerancia de slippage para obtener el precio mínimo de salida
+    uint256 amountOutMin = amountsOut[1] - ((amountsOut[1] * slippageTolerance) / 100);
+
+    // Retornar la cantidad mínima de salida como el precio estimado del token
+    return amountOutMin;
 }
