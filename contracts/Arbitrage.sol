@@ -82,6 +82,8 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
             "Unexpected flash loan token"
         );
 
+        uint256 gasStart = gasleft(); // Start tracking gas usage
+
         if (flashLoanToken == token0) {
             // Start with token0, swap token0 to token1 on Uniswap
             uint256 token1Amount = _swapOnUniswap(
@@ -92,9 +94,13 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
             );
 
             // Check if trade is profitable
+            uint256 gasUsed = gasStart - gasleft();
+            uint256 gasCost = gasUsed * tx.gasprice;
+
             require(
-                token1Amount > flashAmount + feeAmounts[0] + minProfit,
-                "Trade is not profitable"
+                token1Amount >
+                    flashAmount + feeAmounts[0] + minProfit + gasCost,
+                "Trade is not profitable after gas fees"
             );
 
             // Swap token1 to token0 on SushiSwap
@@ -105,7 +111,7 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
                 slippageTolerance
             );
 
-            // Repay flash loan using token0Amount and transfer profit
+            // Repay flash loan using token0Amount
             _repayAndProfit(token0, token0Amount, feeAmounts[0]);
         } else if (flashLoanToken == token1) {
             // Start with token1, swap token1 to token0 on Uniswap
@@ -124,13 +130,18 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
                 slippageTolerance
             );
 
-            // Check if trade is profitable
+            // Calculate gas cost and include it in profitability check
+            uint256 gasUsed = gasStart - gasleft();
+            uint256 gasCost = gasUsed * tx.gasprice;
+
+            // Check if trade is profitable after accounting for gas fees
             require(
-                token1Amount > flashAmount + feeAmounts[0] + minProfit,
-                "Trade is not profitable"
+                token1Amount >
+                    flashAmount + feeAmounts[0] + minProfit + gasCost,
+                "Trade is not profitable after gas fees"
             );
 
-            // Repay flash loan using token1Amount and transfer profit
+            // Repay flash loan using token0Amount
             _repayAndProfit(token1, token1Amount, feeAmounts[0]);
         } else {
             revert("Unsupported flash loan token");
@@ -204,7 +215,7 @@ contract Arbitrage is IFlashLoanRecipient, Ownable {
     // Function to repay flash loan and transfer profit
     function _repayAndProfit(
         address repayToken,
-        uint256 repayAmount,
+        uint256 repayAmount, // Now using the swapped token amount to repay
         uint256 feeAmount
     ) internal {
         // Repagar el flash loan más la comisión
