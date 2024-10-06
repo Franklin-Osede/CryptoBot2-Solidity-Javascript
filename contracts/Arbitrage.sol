@@ -4,15 +4,15 @@ pragma solidity ^0.8.19;
 import "@balancer-labs/v2-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v2-interfaces/contracts/vault/IFlashLoanRecipient.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol"; // Se usa directamente IERC20 sin alias
+import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract Arbitrage is IFlashLoanRecipient {
-    IVault private constant vault =
+contract Arbitrage is IFlashLoanRecipient, Ownable {
+    IVault private constant VAULT =
         IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8); // Balancer Vault
 
     IUniswapV2Router02 public immutable sRouter; // SushiSwap
     IUniswapV2Router02 public immutable uRouter; // Uniswap
-
-    address public owner;
 
     constructor(
         address _sRouter, // SushiSwap
@@ -20,110 +20,216 @@ contract Arbitrage is IFlashLoanRecipient {
     ) {
         sRouter = IUniswapV2Router02(_sRouter);
         uRouter = IUniswapV2Router02(_uRouter);
-        owner = msg.sender;
     }
 
+    // Function to execute arbitrage, now owner-protected
     function executeTrade(
-        address _token0,
-        address _token1,
-        uint256 _flashAmount
-    ) external {
-        bytes memory data = abi.encode(_token0, _token1);
+        address token0,
+        address token1,
+        address flashLoanToken,
+        uint256 minProfit,
+        uint256 slippageTolerance
+    ) external onlyOwner {
+        uint256 dynamicFlashLoanAmount = calculateDynamicLoanAmount(
+            flashLoanToken
+        );
 
-        // Token a tomar en préstamo (WBTC o WETH)
+        bytes memory data = abi.encode(
+            token0,
+            token1,
+            flashLoanToken,
+            minProfit,
+            slippageTolerance
+        );
+
+        // Usamos IERC20 en lugar de OpenZeppelinIERC20
         IERC20[] memory tokens = new IERC20[](1);
-        tokens[0] = IERC20(_token0);
+        tokens[0] = IERC20(flashLoanToken);
 
-        // Cantidad del préstamo
         uint256[] memory amounts = new uint256[](1);
-        amounts[0] = _flashAmount;
+        amounts[0] = dynamicFlashLoanAmount;
 
-        vault.flashLoan(this, tokens, amounts, data);
+        // Solicitar el flash loan desde el Balancer Vault
+        VAULT.flashLoan(this, tokens, amounts, data);
     }
 
+    // Function that receives the flash loan and performs the arbitrage
     function receiveFlashLoan(
-        IERC20[] memory tokens, // Parámetro utilizado pero no modificado
-        uint256[] memory amounts, // Monto del préstamo flash
-        uint256[] memory feeAmounts, // Tarifa del préstamo flash
-        bytes memory userData // Datos adicionales
+        IERC20[] memory tokens, // Cambiado a IERC20
+        uint256[] memory amounts,
+        uint256[] memory feeAmounts,
+        bytes memory userData
     ) external override {
         require(
-            msg.sender == address(vault),
+            msg.sender == address(VAULT),
             "Only the vault can call this function"
         );
 
         uint256 flashAmount = amounts[0];
 
-        // Decodificar las direcciones de los tokens (por ejemplo, WBTC y WETH)
-        (address token0, address token1) = abi.decode(
-            userData,
-            (address, address)
+        // Decode the user data
+        (
+            address token0,
+            address token1,
+            address flashLoanToken,
+            uint256 minProfit,
+            uint256 slippageTolerance
+        ) = abi.decode(userData, (address, address, address, uint256, uint256));
+
+        require(
+            address(tokens[0]) == flashLoanToken,
+            "Unexpected flash loan token"
         );
 
-        // Crear un array para la ruta de intercambio
-        address[] memory path = new address[](2);
-        // Array para las rutas del intercambio
+        if (flashLoanToken == token0) {
+            // Start with token0, swap token0 to token1 on Uniswap
+            uint256 token1Amount = _swapOnUniswap(
+                token0,
+                token1,
+                flashAmount,
+                slippageTolerance
+            );
 
-        // Paso 1: Intercambiar token0 (WBTC) por token1 (WETH) en Uniswap
-        path[0] = token0; // WBTC
-        path[1] = token1; // WETH
-        _swapOnUniswap(path, flashAmount, 0);
+            // Check if trade is profitable
+            require(
+                token1Amount > flashAmount + feeAmounts[0] + minProfit,
+                "Trade is not profitable"
+            );
 
-        // Paso 2: Intercambiar token1 (WETH) por token0 (WBTC) en SushiSwap
-        uint256 amountToken1 = IERC20(token1).balanceOf(address(this)); // Cantidad de WETH recibida
-        path[0] = token1; // WETH
-        path[1] = token0; // WBTC
-        _swapOnSushiswap(path, amountToken1, flashAmount);
+            // Swap token1 to token0 on SushiSwap
+            uint256 token0Amount = _swapOnSushiswap(
+                token1,
+                token0,
+                token1Amount,
+                slippageTolerance
+            );
 
-        // Repagar el préstamo flash + tarifa usando feeAmounts
-        uint256 repaymentAmount = flashAmount + feeAmounts[0]; // Se usa feeAmounts aquí
-        IERC20(token0).transfer(address(vault), repaymentAmount);
+            // Repay flash loan and transfer profit
+            _repayAndProfit(token0, flashAmount, feeAmounts[0]);
+        } else if (flashLoanToken == token1) {
+            // Start with token1, swap token1 to token0 on Uniswap
+            uint256 token0Amount = _swapOnUniswap(
+                token1,
+                token0,
+                flashAmount,
+                slippageTolerance
+            );
 
-        // Transferir cualquier token0 (WBTC) restante al propietario como ganancia
-        IERC20(token0).transfer(owner, IERC20(token0).balanceOf(address(this)));
+            // Swap token0 to token1 on SushiSwap
+            uint256 token1Amount = _swapOnSushiswap(
+                token0,
+                token1,
+                token0Amount,
+                slippageTolerance
+            );
+
+            // Check if trade is profitable
+            require(
+                token1Amount > flashAmount + feeAmounts[0] + minProfit,
+                "Trade is not profitable"
+            );
+
+            // Repay flash loan and transfer profit
+            _repayAndProfit(token1, flashAmount, feeAmounts[0]);
+        } else {
+            revert("Unsupported flash loan token");
+        }
     }
 
-    // Función interna para intercambio en Uniswap
+    // Internal function for swapping on Uniswap
     function _swapOnUniswap(
-        address[] memory _path, // Ruta del intercambio
-        uint256 _amountIn, // Cantidad de entrada
-        uint256 _amountOut // Mínima cantidad de salida
-    ) internal {
-        // Aprobar la transferencia de tokens al router de Uniswap
-        require(
-            IERC20(_path[0]).approve(address(uRouter), _amountIn),
-            "Uniswap approval failed."
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 slippageTolerance
+    ) internal returns (uint256) {
+        // Inicializar el array 'path'
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+
+        // Obtener la cantidad mínima de salida basada en la tasa de intercambio de Uniswap
+        uint256[] memory amountsOut = uRouter.getAmountsOut(amountIn, path);
+        uint256 amountOutMin = amountsOut[1] -
+            ((amountsOut[1] * slippageTolerance) / 100);
+
+        // Aprobar Uniswap para gastar tokens
+        IERC20(tokenIn).approve(address(uRouter), amountIn); // Cambiado a IERC20
+
+        // Ejecutar el intercambio en Uniswap
+        uint256[] memory amounts = uRouter.swapExactTokensForTokens(
+            amountIn,
+            amountOutMin,
+            path,
+            address(this),
+            block.timestamp + 1200
         );
 
-        // Realizar el intercambio en Uniswap
-        uRouter.swapExactTokensForTokens(
-            _amountIn, // Cantidad de tokens a enviar
-            _amountOut, // Mínimo de tokens de salida a recibir
-            _path, // Ruta de intercambio
-            address(this), // Dirección receptora
-            block.timestamp + 1200 // Límite de tiempo
-        );
+        return amounts[1]; // Retornar la cantidad de salida
     }
 
-    // Función interna para intercambio en SushiSwap
+    // Internal function for swapping on SushiSwap
     function _swapOnSushiswap(
-        address[] memory _path, // Ruta del intercambio
-        uint256 _amountIn, // Cantidad de entrada
-        uint256 _amountOut // Mínima cantidad de salida
-    ) internal {
-        // Aprobar la transferencia de tokens al router de SushiSwap
-        require(
-            IERC20(_path[0]).approve(address(sRouter), _amountIn),
-            "Sushiswap approval failed."
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 slippageTolerance
+    ) internal returns (uint256) {
+        // Inicializar el array 'path'
+        address[] memory path = new address[](2);
+        path[0] = tokenIn;
+        path[1] = tokenOut;
+
+        // Obtener la cantidad mínima de salida basada en la tasa de intercambio de SushiSwap
+        uint256[] memory amountsOut = sRouter.getAmountsOut(amountIn, path);
+        uint256 amountOutMin = amountsOut[1] -
+            ((amountsOut[1] * slippageTolerance) / 100);
+
+        // Aprobar SushiSwap para gastar tokens
+        IERC20(tokenIn).approve(address(sRouter), amountIn); // Cambiado a IERC20
+
+        // Ejecutar el intercambio en SushiSwap
+        uint256[] memory amounts = sRouter.swapExactTokensForTokens(
+            amountIn,
+            amountOutMin,
+            path,
+            address(this),
+            block.timestamp + 1200
         );
 
-        // Realizar el intercambio en SushiSwap
-        sRouter.swapExactTokensForTokens(
-            _amountIn, // Cantidad de tokens a enviar
-            _amountOut, // Mínimo de tokens de salida a recibir
-            _path, // Ruta de intercambio
-            address(this), // Dirección receptora
-            block.timestamp + 1200 // Límite de tiempo
-        );
+        return amounts[1]; // Retornar la cantidad de salida
+    }
+
+    // Function to repay flash loan and transfer profit
+    function _repayAndProfit(
+        address repayToken,
+        uint256 flashAmount,
+        uint256 feeAmount
+    ) internal {
+        // Repagar el flash loan más la comisión
+        uint256 repaymentAmount = flashAmount + feeAmount;
+        IERC20(repayToken).transfer(address(VAULT), repaymentAmount); // Cambiado a IERC20
+
+        // Transferir las ganancias restantes al dueño del contrato
+        uint256 profit = IERC20(repayToken).balanceOf(address(this)); // Cambiado a IERC20
+        IERC20(repayToken).transfer(owner(), profit); // Cambiado a IERC20
+    }
+
+    // Calculate the flash loan amount dynamically based on market conditions
+    function calculateDynamicLoanAmount(
+        address token
+    ) internal view returns (uint256) {
+        // Example logic: You can use on-chain price feeds or liquidity data to calculate a reasonable loan amount.
+        uint256 price = getTokenPrice(token);
+
+        // Set dynamic flash loan amount based on price and liquidity
+        uint256 flashLoanAmount = (price * 1e18) / 100; // Example: 1% of token's ETH value
+        return flashLoanAmount;
+    }
+
+    // Example function to get token prices (you would implement this based on your data sources)
+    function getTokenPrice(address token) internal view returns (uint256) {
+        // Placeholder for price fetching logic
+        return 1e18; // Assume 1 token is worth 1 ETH for simplicity
     }
 }
