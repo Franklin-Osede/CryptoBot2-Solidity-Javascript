@@ -4,7 +4,6 @@ pragma solidity ^0.8.19;
 import "@balancer-labs/v2-interfaces/contracts/vault/IVault.sol";
 import "@balancer-labs/v2-interfaces/contracts/vault/IFlashLoanRecipient.sol";
 import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol"; // Se usa directamente IERC20 sin alias
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract Arbitrage is IFlashLoanRecipient, Ownable {

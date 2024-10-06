@@ -16,7 +16,7 @@
   "devDependencies": {
     "@balancer-labs/v2-interfaces": "0.4.0",
     "@nomicfoundation/hardhat-toolbox": "4.0.0",
-    "@openzeppelin/contracts": "^4.9.1",
+    "@openzeppelin/contracts": "^4.9.6",
     "@uniswap/v2-periphery": "1.1.0-beta.0",
     "hardhat": "^2.19.4"
   }
